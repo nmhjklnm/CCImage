@@ -38,51 +38,55 @@ Diagnostics:
   ./ccimage logs                Follow container logs
 ```
 
+## Two Deployment Modes
+
+Auto-detected during `./ccimage setup`:
+
+| | Remote server (Linux) | Local laptop (Mac/Win) |
+|--|----------------------|----------------------|
+| **Network** | macvlan (own IP, isolated) | host (shares localhost) |
+| **Port access** | `./ccimage port 6287` + SSH tunnel | Directly `localhost:6287` |
+| **Host VPN interference** | No (macvlan bypasses) | N/A (you are the host) |
+
 ## Port Forwarding
 
-Container uses macvlan (own IP, isolated from host). To access container ports from your laptop:
+**Remote server** — container has its own IP, need forwarding:
 
 ```bash
-# Step 1: forward container port to host localhost
+# On server: forward to localhost
 ./ccimage port 6287
 
-# Step 2: SSH tunnel from laptop (your existing workflow)
+# On laptop: SSH tunnel (your existing workflow)
 ssh -L 6287:localhost:6287 -qN user@host
-# → http://localhost:6287 on your laptop
+# → http://localhost:6287
 ```
 
-Multiple ports:
+**Local laptop** — host network, ports already on localhost. Nothing to do.
 
 ```bash
-./ccimage port 3000
-./ccimage port 8080
-./ccimage port list       # see all active
+./ccimage port list       # see active forwarders
 ./ccimage port stop       # stop all
 ./ccimage port stop 3000  # stop one
 ```
 
-## Verifying Outbound Isolation
-
-Container traffic must go through your proxy, not the host's VPN. Two levels of verification:
+## Verifying Outbound
 
 ```bash
-# 1. Inside container — checks TUN, DNS, leak, connectivity
+# Inside container — TUN, DNS, leak, connectivity
 ./ccimage check
 
-# 2. From host — proves macvlan isolation with packet-level evidence
+# From host (remote only) — proves macvlan isolation
 ./ccimage verify
 ```
 
-`./ccimage verify` performs 4 checks from the **host side**:
+`./ccimage verify` checks:
 
-| Check | What it proves |
-|-------|---------------|
-| **Exit IP comparison** | Container and host have different exit IPs → different network paths |
-| **MAC address** | Container has its own MAC → macvlan active, not sharing host NIC |
-| **Traffic path** | Container routes through physical gateway, not Docker bridge |
-| **Packet capture** | tcpdump on physical NIC sees container packets → bypasses host stack |
-
-If all 4 pass, container outbound is **provably isolated** from the host.
+| Check | Proves |
+|-------|--------|
+| Exit IP comparison | Container and host exit through different IPs |
+| MAC address | Container has own MAC (macvlan active) |
+| Traffic path | Routes through physical gateway, not Docker bridge |
+| Packet capture | tcpdump sees container packets on physical NIC |
 
 ## Proxy Formats
 
@@ -96,7 +100,8 @@ If all 4 pass, container outbound is **provably isolated** from the host.
 
 ## Requirements
 
-- Linux + Docker / Docker Compose + socat (`apt install socat`)
+- Docker / Docker Compose (Linux, macOS, or Windows)
+- Remote server: socat (`apt install socat`) for port forwarding
 - A working proxy
 
 ## License

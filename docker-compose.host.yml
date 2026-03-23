@@ -1,0 +1,4 @@
+# Local mode (laptop): host network, ports directly on localhost.
+services:
+  ccimage:
+    network_mode: host
