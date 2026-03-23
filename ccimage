@@ -280,9 +280,38 @@ cmd_create() {
   info "Start with: ${BOLD}./ccimage start${RESET}"
 }
 
+_check_host_vpn() {
+  # Detect VPN interfaces on the host — only matters in local/host mode
+  local vpn_ifs
+  vpn_ifs=$(ip -o link show 2>/dev/null \
+    | awk -F': ' '{print $2}' \
+    | grep -iE '^(tun[1-9]|utun|wg|ppp|tailscale|proton|nord|mullvad|wireguard)' \
+    || true)
+  if [[ -n "$vpn_ifs" ]]; then
+    echo ""
+    printf "${RED}${BOLD}  ╔══════════════════════════════════════════════════════╗${RESET}\n"
+    printf "${RED}${BOLD}  ║  WARNING: VPN detected on host                      ║${RESET}\n"
+    printf "${RED}${BOLD}  ║  Container traffic will go through the VPN!          ║${RESET}\n"
+    printf "${RED}${BOLD}  ║  Exit IP may not be your proxy's IP.                 ║${RESET}\n"
+    printf "${RED}${BOLD}  ║                                                      ║${RESET}\n"
+    printf "${RED}${BOLD}  ║  → Disconnect VPN, or use remote server (macvlan).   ║${RESET}\n"
+    printf "${RED}${BOLD}  ╚══════════════════════════════════════════════════════╝${RESET}\n"
+    printf "  VPN interfaces: %s\n" "$vpn_ifs"
+    echo ""
+    read -rp "  Continue anyway? [y/N]: " confirm
+    [[ "$confirm" != [yY] ]] && { info "Aborted."; exit 0; }
+  fi
+}
+
 cmd_start() {
   [[ ! -f "$ENV_FILE" ]] && { warn "No .env found, running setup first..."; cmd_setup; }
   _load_env
+
+  # Warn if host VPN detected in local mode
+  if [[ "$(_get_mode)" == "local" ]]; then
+    _check_host_vpn
+  fi
+
   info "Starting container..."
   _compose up -d
   _shim_up

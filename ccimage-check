@@ -63,9 +63,24 @@ check_exit_ip() {
   fi
 }
 
+check_vpn() {
+  # Detect VPN interfaces in current namespace (matters in host network mode)
+  local vpn_ifs
+  vpn_ifs=$(ip -o link show 2>/dev/null \
+    | awk -F': ' '{print $2}' \
+    | grep -iE '^(tun[1-9]|utun|wg|ppp|tailscale|proton|nord|mullvad|wireguard)' \
+    || true)
+  if [ -n "$vpn_ifs" ]; then
+    echo "VPN DETECTED: $vpn_ifs — exit IP may be wrong!"
+    return 1
+  fi
+  echo "no VPN interfaces (clean)"
+}
+
 run_check "TUN"  "tun0 not found — check SINGBOX_ENABLE=1 and NET_ADMIN capability" check_tun
 run_check "DNS"  "DNS resolution failed — check DNS_SERVER" check_dns
 run_check "LEAK" "DNS leak check inconclusive — verify sing-box route rules" check_leak
+run_check "VPN"  "VPN detected — disconnect VPN or use remote server" check_vpn
 run_check "TCP"  "TCP connect failed — check proxy address and credentials" check_tcp
 run_check "HTTP" "HTTP request failed — check TLS and proxy config" check_http
 run_check "EXIT" "Cannot determine exit IP" check_exit_ip
