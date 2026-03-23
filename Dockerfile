@@ -9,10 +9,6 @@ ARG BUILD_PROXY
 
 RUN set -eux; \
     CURL="curl ${BUILD_PROXY:+-x $BUILD_PROXY}"; \
-    if [ -n "${BUILD_PROXY:-}" ]; then \
-      export http_proxy="$BUILD_PROXY" https_proxy="$BUILD_PROXY" \
-             HTTP_PROXY="$BUILD_PROXY" HTTPS_PROXY="$BUILD_PROXY" ALL_PROXY="$BUILD_PROXY"; \
-    fi; \
     apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git iproute2 \
       locales nftables procps python3 python3-venv tzdata \
