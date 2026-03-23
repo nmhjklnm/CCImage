@@ -303,10 +303,10 @@ cmd_create() {
   [[ ! -f "$ENV_FILE" ]] && { warn "No .env found, running setup first..."; cmd_setup; }
   _load_env
   echo ""
-  info "Building image..."
-  _compose build
+  info "Pulling image..."
+  docker pull ghcr.io/nmhjklnm/ccimage:latest
   echo ""
-  ok "Image built"
+  ok "Image ready"
   info "Start with: ${BOLD}./ccimage start${RESET}"
 }
 
@@ -453,7 +453,7 @@ cmd_help() {
   echo ""
   printf "${BOLD}Lifecycle:${RESET}\n"
   echo "  setup               Configure proxy (interactive)"
-  echo "  create              Build the Docker image"
+  echo "  create              Pull the Docker image"
   echo "  start               Start the container"
   echo "  stop                Stop the container"
   echo "  restart             Restart the container"

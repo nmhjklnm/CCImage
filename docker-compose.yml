@@ -1,10 +1,7 @@
 # Base compose — use with docker-compose.macvlan.yml or docker-compose.local.yml
 services:
   ccimage:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ccimage:latest
+    image: ghcr.io/nmhjklnm/ccimage:latest
     privileged: true
     cap_add:
       - NET_ADMIN

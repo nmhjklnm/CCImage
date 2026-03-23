@@ -9,7 +9,7 @@ Docker image with **Node LTS**, **uv**, **sing-box TUN** and **Claude Code CLI**
 ```bash
 git clone https://github.com/nmhjklnm/CCImage.git && cd CCImage
 ./ccimage setup     # paste proxy, network auto-detected
-./ccimage create    # build image
+./ccimage create    # pull image
 ./ccimage start     # start container
 ./ccimage enter     # open shell, run claude
 ```
@@ -19,7 +19,7 @@ git clone https://github.com/nmhjklnm/CCImage.git && cd CCImage
 ```
 Lifecycle:
   ./ccimage setup               Configure proxy (interactive)
-  ./ccimage create              Build the Docker image
+  ./ccimage create              Pull the Docker image
   ./ccimage start               Start the container
   ./ccimage stop                Stop the container
   ./ccimage restart             Restart the container
