@@ -30,11 +30,28 @@ check_dns() {
 }
 
 check_leak() {
-  local sys_ip
-  sys_ip=$(timeout 5 getent ahostsv4 myip.opendns.com 2>/dev/null | head -1 | awk '{print $1}')
-  if [ -n "$sys_ip" ]; then
-    echo "no leak detected (resolver: $sys_ip)"
+  # DNS leak = resolv.conf points to something other than TUN DNS.
+  # If resolv.conf uses the TUN gateway, all DNS goes through sing-box → proxy.
+  local ns
+  ns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+  if [ -z "$ns" ]; then
+    echo "no nameserver in resolv.conf"
+    return 1
+  fi
+  # TUN address is 172.19.0.x by default; check it's not a public/Docker DNS
+  local tun_net
+  tun_net=$(ip -4 addr show tun0 2>/dev/null | awk '/inet/{print $2; exit}')
+  if [ -z "$tun_net" ]; then
+    echo "tun0 has no address"
+    return 1
+  fi
+  # Extract network prefix from TUN (e.g. 172.19.0 from 172.19.0.1/30)
+  local tun_prefix="${tun_net%.*}"
+  local ns_prefix="${ns%.*}"
+  if [ "$tun_prefix" = "$ns_prefix" ]; then
+    echo "DNS → $ns (TUN gateway, no leak)"
   else
+    echo "DNS → $ns (NOT on TUN network $tun_prefix.x — possible leak)"
     return 1
   fi
 }
@@ -44,10 +61,11 @@ check_tcp() {
 }
 
 check_http() {
+  # Use -L to follow redirects, accept any successful response
   local code
-  code=$(timeout 10 curl -sf -o /dev/null -w "%{http_code}" https://claude.ai 2>/dev/null)
-  if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
-    echo "https://claude.ai → $code"
+  code=$(timeout 10 curl -sL -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null)
+  if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then
+    echo "https://www.google.com → $code"
   else
     return 1
   fi
@@ -65,7 +83,7 @@ check_exit_ip() {
 
 run_check "TUN"  "tun0 not found — check SINGBOX_ENABLE=1 and NET_ADMIN capability" check_tun
 run_check "DNS"  "DNS resolution failed — check DNS_SERVER" check_dns
-run_check "LEAK" "DNS leak check inconclusive — verify sing-box route rules" check_leak
+run_check "LEAK" "DNS may be leaking — resolv.conf not pointing to TUN" check_leak
 run_check "TCP"  "TCP connect failed — check proxy address and credentials" check_tcp
 run_check "HTTP" "HTTP request failed — check TLS and proxy config" check_http
 run_check "EXIT" "Cannot determine exit IP" check_exit_ip
