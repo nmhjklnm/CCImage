@@ -53,11 +53,22 @@ check_http() {
   fi
 }
 
+check_exit_ip() {
+  local ip
+  ip=$(timeout 10 curl -sf https://ifconfig.me 2>/dev/null || true)
+  if [ -n "$ip" ]; then
+    echo "$ip"
+  else
+    return 1
+  fi
+}
+
 run_check "TUN"  "tun0 not found — check SINGBOX_ENABLE=1 and NET_ADMIN capability" check_tun
 run_check "DNS"  "DNS resolution failed — check DNS_SERVER" check_dns
 run_check "LEAK" "DNS leak check inconclusive — verify sing-box route rules" check_leak
 run_check "TCP"  "TCP connect failed — check proxy address and credentials" check_tcp
 run_check "HTTP" "HTTP request failed — check TLS and proxy config" check_http
+run_check "EXIT" "Cannot determine exit IP" check_exit_ip
 
 echo ""
 if [ "$errors" -eq 0 ]; then
