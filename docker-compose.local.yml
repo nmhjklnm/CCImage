@@ -1,0 +1,5 @@
+# Local mode (laptop): bridge network, container fully isolated.
+# sing-box TUN only affects the container, not the host.
+services:
+  ccimage:
+    network_mode: bridge

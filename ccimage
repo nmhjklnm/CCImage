@@ -59,7 +59,7 @@ _compose_files() {
   local mode
   mode=$(_get_mode)
   if [[ "$mode" == "local" ]]; then
-    echo "${COMPOSE_BASE[@]}" -f "${SCRIPT_DIR}/docker-compose.host.yml"
+    echo "${COMPOSE_BASE[@]}" -f "${SCRIPT_DIR}/docker-compose.local.yml"
   else
     echo "${COMPOSE_BASE[@]}" -f "${SCRIPT_DIR}/docker-compose.macvlan.yml"
   fi
@@ -134,19 +134,6 @@ _port_forward() {
   local mode
   mode=$(_get_mode)
 
-  if [[ "$mode" == "local" ]]; then
-    # Host network: container ports are already on localhost
-    ok "localhost:${port} (host network — already accessible)"
-    return 0
-  fi
-
-  # Remote/macvlan: socat forward
-  _load_env
-  local cip="${MACVLAN_IP:-}"
-  [[ -z "$cip" ]] && { err "MACVLAN_IP not set. Run ./ccimage setup first."; return 1; }
-
-  _shim_up
-
   mkdir -p "$PORT_DIR"
   local pidfile="${PORT_DIR}/${port}.pid"
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
@@ -154,22 +141,70 @@ _port_forward() {
     return 0
   fi
 
-  if ! command -v socat &>/dev/null; then
-    err "socat not found. Install with: apt install socat"
-    return 1
-  fi
+  if [[ "$mode" == "remote" ]]; then
+    # Remote/macvlan: socat on host, needs shim to reach container
+    _load_env
+    local cip="${MACVLAN_IP:-}"
+    [[ -z "$cip" ]] && { err "MACVLAN_IP not set. Run ./ccimage setup first."; return 1; }
+    _shim_up
 
-  socat TCP-LISTEN:"$port",fork,reuseaddr,bind=127.0.0.1 TCP:"${cip}":"$port" &
-  local pid=$!
-  echo "$pid" > "$pidfile"
+    if ! command -v socat &>/dev/null; then
+      err "socat not found. Install with: apt install socat"
+      return 1
+    fi
 
-  sleep 0.3
-  if kill -0 "$pid" 2>/dev/null; then
-    ok "localhost:${port} → ${cip}:${port} (pid $pid)"
+    socat TCP-LISTEN:"$port",fork,reuseaddr,bind=127.0.0.1 TCP:"${cip}":"$port" &
+    local pid=$!
+    echo "$pid" > "$pidfile"
+
+    sleep 0.3
+    if kill -0 "$pid" 2>/dev/null; then
+      ok "localhost:${port} → ${cip}:${port} (pid $pid)"
+    else
+      err "Failed to start forwarder on port $port"
+      rm -f "$pidfile"
+      return 1
+    fi
   else
-    err "Failed to start forwarder on port $port"
-    rm -f "$pidfile"
-    return 1
+    # Local/bridge: get container IP on docker bridge, forward via socat or python
+    local cip
+    cip=$(_compose exec -T "$SERVICE" hostname -I 2>/dev/null | awk '{print $1}')
+    [[ -z "$cip" ]] && { err "Cannot determine container IP"; return 1; }
+
+    # Try socat first, fall back to python
+    if command -v socat &>/dev/null; then
+      socat TCP-LISTEN:"$port",fork,reuseaddr,bind=127.0.0.1 TCP:"${cip}":"$port" &
+    elif command -v python3 &>/dev/null; then
+      python3 -c "
+import socket, threading, sys
+def fwd(src, dst):
+    try:
+        while d := src.recv(4096):
+            dst.sendall(d)
+    except: pass
+    finally: src.close(); dst.close()
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', $port)); s.listen(8)
+while True:
+    c, _ = s.accept()
+    r = socket.create_connection(('$cip', $port))
+    threading.Thread(target=fwd, args=(c,r), daemon=True).start()
+    threading.Thread(target=fwd, args=(r,c), daemon=True).start()
+" &
+    else
+      err "Need socat or python3 on host for port forwarding"
+      return 1
+    fi
+    local pid=$!
+    echo "$pid" > "$pidfile"
+    sleep 0.3
+    if kill -0 "$pid" 2>/dev/null; then
+      ok "localhost:${port} → ${cip}:${port} (pid $pid)"
+    else
+      err "Failed to start forwarder on port $port"
+      rm -f "$pidfile"
+      return 1
+    fi
   fi
 }
 
@@ -189,14 +224,9 @@ _port_list() {
   local mode
   mode=$(_get_mode)
 
-  if [[ "$mode" == "local" ]]; then
-    info "Host network mode — all container ports are directly on localhost"
-    return 0
-  fi
-
   mkdir -p "$PORT_DIR"
   _load_env
-  local cip="${MACVLAN_IP:-}" found=0
+  local cip="${MACVLAN_IP:-container}" found=0
 
   for pidfile in "$PORT_DIR"/*.pid; do
     [[ -f "$pidfile" ]] || continue
@@ -280,38 +310,9 @@ cmd_create() {
   info "Start with: ${BOLD}./ccimage start${RESET}"
 }
 
-_check_host_vpn() {
-  # Detect VPN interfaces on the host — only matters in local/host mode
-  local vpn_ifs
-  vpn_ifs=$(ip -o link show 2>/dev/null \
-    | awk -F': ' '{print $2}' \
-    | grep -iE '^(tun[1-9]|utun|wg|ppp|tailscale|proton|nord|mullvad|wireguard)' \
-    || true)
-  if [[ -n "$vpn_ifs" ]]; then
-    echo ""
-    printf "${RED}${BOLD}  ╔══════════════════════════════════════════════════════╗${RESET}\n"
-    printf "${RED}${BOLD}  ║  WARNING: VPN detected on host                      ║${RESET}\n"
-    printf "${RED}${BOLD}  ║  Container traffic will go through the VPN!          ║${RESET}\n"
-    printf "${RED}${BOLD}  ║  Exit IP may not be your proxy's IP.                 ║${RESET}\n"
-    printf "${RED}${BOLD}  ║                                                      ║${RESET}\n"
-    printf "${RED}${BOLD}  ║  → Disconnect VPN, or use remote server (macvlan).   ║${RESET}\n"
-    printf "${RED}${BOLD}  ╚══════════════════════════════════════════════════════╝${RESET}\n"
-    printf "  VPN interfaces: %s\n" "$vpn_ifs"
-    echo ""
-    read -rp "  Continue anyway? [y/N]: " confirm
-    [[ "$confirm" != [yY] ]] && { info "Aborted."; exit 0; }
-  fi
-}
-
 cmd_start() {
   [[ ! -f "$ENV_FILE" ]] && { warn "No .env found, running setup first..."; cmd_setup; }
   _load_env
-
-  # Warn if host VPN detected in local mode
-  if [[ "$(_get_mode)" == "local" ]]; then
-    _check_host_vpn
-  fi
-
   info "Starting container..."
   _compose up -d
   _shim_up
@@ -324,9 +325,7 @@ cmd_start() {
     ok "Container running"
     info "Enter with:   ${BOLD}./ccimage enter${RESET}"
     info "Check with:   ${BOLD}./ccimage check${RESET}"
-    if [[ "$(_get_mode)" == "remote" ]]; then
-      info "Forward port: ${BOLD}./ccimage port <port>${RESET}"
-    fi
+    info "Forward port: ${BOLD}./ccimage port <port>${RESET}"
   else
     err "Container state: $state"
     info "Logs: ./ccimage logs"

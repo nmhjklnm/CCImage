@@ -40,33 +40,30 @@ Diagnostics:
 
 ## Two Deployment Modes
 
-Auto-detected during `./ccimage setup`:
+Auto-detected during `./ccimage setup`. Both modes use **isolated network namespaces** — container TUN never affects the host, host VPN never affects the container.
 
 | | Remote server (Linux) | Local laptop (Mac/Win) |
 |--|----------------------|----------------------|
-| **Network** | macvlan (own IP, isolated) | host (shares localhost) |
-| **Port access** | `./ccimage port 6287` + SSH tunnel | Directly `localhost:6287` |
-| **Host VPN interference** | No (macvlan bypasses) | N/A (you are the host) |
+| **Network** | macvlan (own IP on physical LAN) | bridge (Docker internal network) |
+| **Isolation** | Full — bypasses host network stack | Full — own namespace |
+| **Host VPN affects container** | No | No |
+| **Port access** | `./ccimage port` + SSH tunnel | `./ccimage port` |
 
 ## Port Forwarding
 
-**Remote server** — container has its own IP, need forwarding:
-
 ```bash
-# On server: forward to localhost
-./ccimage port 6287
-
-# On laptop: SSH tunnel (your existing workflow)
-ssh -L 6287:localhost:6287 -qN user@host
-# → http://localhost:6287
-```
-
-**Local laptop** — host network, ports already on localhost. Nothing to do.
-
-```bash
+./ccimage port 6287       # forward localhost:6287 → container:6287
+./ccimage port 3000       # another port
 ./ccimage port list       # see active forwarders
 ./ccimage port stop       # stop all
 ./ccimage port stop 3000  # stop one
+```
+
+**Remote server** — add SSH tunnel from your laptop:
+
+```bash
+ssh -L 6287:localhost:6287 -qN user@host
+# → http://localhost:6287 on your laptop
 ```
 
 ## Verifying Outbound

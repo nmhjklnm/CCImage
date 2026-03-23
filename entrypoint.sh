@@ -5,11 +5,9 @@ SINGBOX_ENABLE="${SINGBOX_ENABLE:-1}"
 DISABLE_IPV6="${DISABLE_IPV6:-1}"
 HEALTHCHECK="${HEALTHCHECK:-1}"
 
-# Clear proxy env — sing-box TUN handles routing
 unset ALL_PROXY HTTP_PROXY HTTPS_PROXY all_proxy http_proxy https_proxy \
       NO_PROXY no_proxy 2>/dev/null || true
 
-# Optional IPv6 disable
 if [[ "$DISABLE_IPV6" == "1" ]]; then
   sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null || true
   sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true
@@ -18,7 +16,6 @@ fi
 _SINGBOX_PID=""
 
 if [[ "$SINGBOX_ENABLE" == "1" ]]; then
-  # Generate config via Python engine
   mkdir -p /etc/sing-box
   python3 -m ccimage > /etc/sing-box/config.json \
     || { echo "Failed to generate sing-box config" >&2; exit 1; }
@@ -26,7 +23,6 @@ if [[ "$SINGBOX_ENABLE" == "1" ]]; then
   sing-box run -c /etc/sing-box/config.json &
   _SINGBOX_PID=$!
 
-  # Wait for TUN interface
   for _ in $(seq 1 150); do
     ip -o link show tun0 2>/dev/null && break
     kill -0 "$_SINGBOX_PID" 2>/dev/null || { echo "sing-box exited before TUN came up" >&2; exit 1; }
@@ -40,15 +36,12 @@ if [[ "$SINGBOX_ENABLE" == "1" ]]; then
   TUN_DNS="${_prefix}.$(( _last + 1 ))"
   printf 'nameserver %s\noptions ndots:0\n' "$TUN_DNS" > /etc/resolv.conf
 
-  # Startup health check
   if [[ "$HEALTHCHECK" == "1" ]]; then
     echo "Running startup health check..."
     ccimage-check || echo "Warning: some checks failed (container will start anyway)" >&2
   fi
 
 elif [[ "$SINGBOX_ENABLE" == "0" ]]; then
-  # Fallback: env-based SOCKS proxy (not leak-safe)
-  # Build SOCKS URL from PROXY_URI or legacy vars
   if [[ -n "${PROXY_URI:-}" ]] && [[ "$PROXY_URI" != *"://"* ]]; then
     IFS=: read -r h p u pw <<< "$PROXY_URI"
     PROXY_URL="socks5h://${u:+$u:$pw@}$h:$p"
