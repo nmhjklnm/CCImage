@@ -11,8 +11,18 @@ fail() { printf "${RED}FAIL${RESET}  %s\n" "$*"; errors=$((errors + 1)); }
 info() { printf "${CYAN}    ${RESET}  %s\n" "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-COMPOSE_FILES=(-f "${SCRIPT_DIR}/docker-compose.yml" -f "${SCRIPT_DIR}/docker-compose.macvlan.yml")
 SERVICE="ccimage"
+
+# Detect mode from .env
+_deploy_mode="remote"
+[[ -f "${SCRIPT_DIR}/.env" ]] && _deploy_mode=$(grep -m1 "^DEPLOY_MODE=" "${SCRIPT_DIR}/.env" 2>/dev/null | cut -d= -f2- || echo "remote")
+_deploy_mode="${_deploy_mode:-remote}"
+
+if [[ "$_deploy_mode" == "local" ]]; then
+  COMPOSE_FILES=(-f "${SCRIPT_DIR}/docker-compose.yml" -f "${SCRIPT_DIR}/docker-compose.local.yml")
+else
+  COMPOSE_FILES=(-f "${SCRIPT_DIR}/docker-compose.yml" -f "${SCRIPT_DIR}/docker-compose.macvlan.yml")
+fi
 
 # ── Check container is running ──────────────────────────────────────
 state=$(docker compose "${COMPOSE_FILES[@]}" ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "")

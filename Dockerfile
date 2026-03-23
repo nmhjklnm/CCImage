@@ -4,19 +4,15 @@ FROM node:${NODE_TAG}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG SINGBOX_VERSION=1.11.4
-ARG PROXY_HOST
-ARG PROXY_PORT
-ARG PROXY_USER
-ARG PROXY_PASS
+# Optional: SOCKS5 proxy for build-time downloads (e.g. socks5h://user:pass@host:port)
+ARG BUILD_PROXY
 
-# Single layer: system packages + uv + sing-box
 RUN set -eux; \
-    if [ -n "${PROXY_HOST:-}" ] && [ -n "${PROXY_PORT:-}" ]; then \
-      PROXY_URL="socks5h://${PROXY_USER:-}:${PROXY_PASS:-}@${PROXY_HOST}:${PROXY_PORT}"; \
-      export http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" \
-             HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" ALL_PROXY="$PROXY_URL"; \
+    CURL="curl ${BUILD_PROXY:+-x $BUILD_PROXY}"; \
+    if [ -n "${BUILD_PROXY:-}" ]; then \
+      export http_proxy="$BUILD_PROXY" https_proxy="$BUILD_PROXY" \
+             HTTP_PROXY="$BUILD_PROXY" HTTPS_PROXY="$BUILD_PROXY" ALL_PROXY="$BUILD_PROXY"; \
     fi; \
-    CURL="curl ${PROXY_URL:+-x $PROXY_URL}"; \
     apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git iproute2 \
       locales nftables procps python3 python3-venv tzdata \
@@ -33,12 +29,8 @@ RUN set -eux; \
        | tar xzO "sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}/sing-box" > /usr/local/bin/sing-box \
     && chmod +x /usr/local/bin/sing-box
 
-# Claude Code CLI
 RUN set -eux; \
-    if [ -n "${PROXY_HOST:-}" ] && [ -n "${PROXY_PORT:-}" ]; then \
-      PROXY_URL="socks5h://${PROXY_USER:-}:${PROXY_PASS:-}@${PROXY_HOST}:${PROXY_PORT}"; \
-    fi; \
-    curl ${PROXY_URL:+-x "$PROXY_URL"} -fsSL https://claude.ai/install.sh | bash; \
+    curl ${BUILD_PROXY:+-x "$BUILD_PROXY"} -fsSL https://claude.ai/install.sh | bash; \
     test -x /root/.local/bin/claude
 
 ENV TZ=America/Los_Angeles \

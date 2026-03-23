@@ -42,15 +42,17 @@ if [[ "$SINGBOX_ENABLE" == "1" ]]; then
   fi
 
 elif [[ "$SINGBOX_ENABLE" == "0" ]]; then
-  if [[ -n "${PROXY_URI:-}" ]] && [[ "$PROXY_URI" != *"://"* ]]; then
-    IFS=: read -r h p u pw <<< "$PROXY_URI"
-    PROXY_URL="socks5h://${u:+$u:$pw@}$h:$p"
-  elif [[ -n "${PROXY_HOST:-}" ]]; then
-    PROXY_URL="socks5h://${PROXY_USER:+$PROXY_USER:$PROXY_PASS@}${PROXY_HOST}:${PROXY_PORT:-1080}"
-  else
-    echo "SINGBOX_ENABLE=0 but no SOCKS proxy configured" >&2
+  if [[ -z "${PROXY_URI:-}" ]]; then
+    echo "SINGBOX_ENABLE=0 but PROXY_URI not set" >&2
     exit 1
   fi
+  if [[ "$PROXY_URI" == *"://"* ]]; then
+    # Share link — can't derive a simple SOCKS URL; user must use TUN mode
+    echo "SINGBOX_ENABLE=0 does not support share links. Use SINGBOX_ENABLE=1 or compact format." >&2
+    exit 1
+  fi
+  IFS=: read -r h p u pw <<< "$PROXY_URI"
+  PROXY_URL="socks5h://${u:+$u:$pw@}$h:$p"
   export ALL_PROXY="$PROXY_URL" HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL"
   export all_proxy="$PROXY_URL" http_proxy="$PROXY_URL" https_proxy="$PROXY_URL"
   export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"

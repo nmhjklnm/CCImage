@@ -38,7 +38,7 @@ _write_env() {
 
 # ─── Mode detection ─────────────────────────────────────────────────
 _detect_mode() {
-  # Docker Desktop (Mac/Win) → local mode (host network)
+  # Docker Desktop (Mac/Win) → local mode (bridge network)
   # Native Linux Docker      → remote mode (macvlan)
   if docker info 2>/dev/null | grep -qi "docker desktop\|operating system:.*docker desktop\|platform.*desktop"; then
     echo "local"
@@ -270,7 +270,7 @@ cmd_setup() {
   else
     read -rp "  Proxy URI (e.g. ss://..., ip:port:user:pass): " proxy
   fi
-  if [[ -z "$proxy" && -z "$(_read_env PROXY_HOST)" ]]; then
+  if [[ -z "$proxy" ]]; then
     err "Proxy is required"
     return 1
   fi
@@ -284,7 +284,7 @@ cmd_setup() {
   echo ""
   if [[ "$mode" == "local" ]]; then
     info "Detected: ${BOLD}local laptop${RESET} (Docker Desktop)"
-    info "Mode: host network — ports directly on localhost"
+    info "Mode: bridge network — container isolated"
   else
     info "Detected: ${BOLD}remote server${RESET} (native Linux Docker)"
     info "Mode: macvlan — container isolated from host"

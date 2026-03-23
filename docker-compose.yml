@@ -1,18 +1,9 @@
-# Three network modes via NETWORK_MODE in .env:
-#   bridge  (default) — container isolated, but host TUN/VPN may affect outbound
-#   macvlan           — container bypasses host network stack entirely (recommended)
-#   host              — container shares host network (TUN affects entire host)
+# Base compose — use with docker-compose.macvlan.yml or docker-compose.local.yml
 services:
   ccimage:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        NODE_TAG: ${NODE_TAG:-lts-bookworm}
-        PROXY_HOST: ${PROXY_HOST:-}
-        PROXY_PORT: ${PROXY_PORT:-}
-        PROXY_USER: ${PROXY_USER:-}
-        PROXY_PASS: ${PROXY_PASS:-}
     image: ccimage:latest
     privileged: true
     cap_add:
@@ -20,11 +11,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      PROXY_URI: ${PROXY_URI:-}
-      PROXY_HOST: ${PROXY_HOST:-}
-      PROXY_PORT: ${PROXY_PORT:-}
-      PROXY_USER: ${PROXY_USER:-}
-      PROXY_PASS: ${PROXY_PASS:-}
+      PROXY_URI: ${PROXY_URI:?Set PROXY_URI in .env}
       SINGBOX_ENABLE: ${SINGBOX_ENABLE:-1}
       DNS_SERVER: ${DNS_SERVER:-tls://1.1.1.1}
       TUN_ADDRESS: ${TUN_ADDRESS:-172.19.0.1/30}
