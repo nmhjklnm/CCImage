@@ -17,8 +17,8 @@ RUN set -eux; \
       build-essential ca-certificates curl git iproute2 \
       locales nftables procps python3 python3-venv tzdata \
     && rm -rf /var/lib/apt/lists/* \
-    && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
-    && locale-gen en_US.UTF-8 \
+    && sed -i 's/^# *\(en_US\|en_GB\|ja_JP\|ko_KR\|zh_CN\|zh_TW\|de_DE\|fr_FR\)\.UTF-8/\1.UTF-8/' /etc/locale.gen \
+    && locale-gen \
     && corepack enable \
     && $CURL -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local sh \
     && ln -sf /usr/local/uv /usr/local/bin/uv \
@@ -33,11 +33,7 @@ RUN set -eux; \
     curl ${BUILD_PROXY:+-x "$BUILD_PROXY"} -fsSL https://claude.ai/install.sh | bash; \
     test -x /root/.local/bin/claude
 
-ENV TZ=America/Los_Angeles \
-    LANG=en_US.UTF-8 \
-    LANGUAGE=en_US:en \
-    LC_ALL=en_US.UTF-8 \
-    ACCEPT_LANGUAGE=en-US,en;q=0.9 \
+ENV LANG=en_US.UTF-8 \
     PATH="/root/.local/bin:${PATH}"
 
 RUN echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc

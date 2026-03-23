@@ -36,6 +36,22 @@ if [[ "$SINGBOX_ENABLE" == "1" ]]; then
   TUN_DNS="${_prefix}.$(( _last + 1 ))"
   printf 'nameserver %s\noptions ndots:0\n' "$TUN_DNS" > /etc/resolv.conf
 
+  # Auto-detect timezone and locale from exit IP
+  if _geo_exports=$(python3 -m ccimage.geo 2>&1 1>/tmp/ccimage-geo.sh); then
+    true  # stderr message printed by geo.py
+  fi
+  if [[ -f /tmp/ccimage-geo.sh && -s /tmp/ccimage-geo.sh ]]; then
+    source /tmp/ccimage-geo.sh
+    echo "Locale: $LANG  TZ: $TZ"
+    # Persist for subprocesses
+    echo "export TZ=\"$TZ\"" >> /root/.bashrc
+    echo "export LANG=\"$LANG\"" >> /root/.bashrc
+    echo "export LANGUAGE=\"$LANGUAGE\"" >> /root/.bashrc
+    echo "export LC_ALL=\"$LC_ALL\"" >> /root/.bashrc
+    echo "export ACCEPT_LANGUAGE=\"$ACCEPT_LANGUAGE\"" >> /root/.bashrc
+  fi
+  rm -f /tmp/ccimage-geo.sh
+
   if [[ "$HEALTHCHECK" == "1" ]]; then
     echo "Running startup health check..."
     ccimage-check || echo "Warning: some checks failed (container will start anyway)" >&2

@@ -81,12 +81,20 @@ check_exit_ip() {
   fi
 }
 
+check_geo() {
+  local tz="${TZ:-not set}"
+  local lang="${LANG:-not set}"
+  local accept="${ACCEPT_LANGUAGE:-not set}"
+  echo "TZ=$tz  LANG=$lang  Accept=$accept"
+}
+
 run_check "TUN"  "tun0 not found — check SINGBOX_ENABLE=1 and NET_ADMIN capability" check_tun
 run_check "DNS"  "DNS resolution failed — check DNS_SERVER" check_dns
 run_check "LEAK" "DNS may be leaking — resolv.conf not pointing to TUN" check_leak
 run_check "TCP"  "TCP connect failed — check proxy address and credentials" check_tcp
 run_check "HTTP" "HTTP request failed — check TLS and proxy config" check_http
 run_check "EXIT" "Cannot determine exit IP" check_exit_ip
+run_check "GEO"  "Timezone/locale not set" check_geo
 
 echo ""
 if [ "$errors" -eq 0 ]; then
