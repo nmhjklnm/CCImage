@@ -375,18 +375,18 @@ cmd_verify() {
   if [[ -n "$host_ip" ]]; then
     ok "Host exit:      ${BOLD}${host_ip}${RESET}"
   else
-    warn "Host cannot reach ifconfig.me"
+    info "Host cannot reach ifconfig.me (blocked or no proxy — this is fine)"
   fi
 
-  # Compare
   echo ""
   if [[ -n "$container_ip" && -n "$host_ip" ]]; then
     if [[ "$container_ip" != "$host_ip" ]]; then
       ok "Exit IPs differ — container uses a different network path than host"
     else
-      warn "Exit IPs are the same — expected if host has no VPN"
-      info "Verify ${BOLD}${container_ip}${RESET} is your proxy's exit IP"
+      info "Exit IPs are the same — verify ${BOLD}${container_ip}${RESET} is your proxy's exit IP"
     fi
+  elif [[ -n "$container_ip" && -z "$host_ip" ]]; then
+    ok "Container can reach internet, host cannot — proxy is working"
   fi
   echo ""
 }
