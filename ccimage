@@ -12,10 +12,10 @@ PORT_DIR="/tmp/ccimage-ports"
 # ─── Colors ──────────────────────────────────────────────────────────
 RED='\033[31m'  GREEN='\033[32m'  YELLOW='\033[33m'  CYAN='\033[36m'  BOLD='\033[1m'  RESET='\033[0m'
 
-info()  { printf "${CYAN}▸${RESET} %s\n" "$*"; }
-ok()    { printf "${GREEN}✓${RESET} %s\n" "$*"; }
-warn()  { printf "${YELLOW}!${RESET} %s\n" "$*"; }
-err()   { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
+info()  { printf "${CYAN}▸${RESET} %b\n" "$*"; }
+ok()    { printf "${GREEN}✓${RESET} %b\n" "$*"; }
+warn()  { printf "${YELLOW}!${RESET} %b\n" "$*"; }
+err()   { printf "${RED}✗${RESET} %b\n" "$*" >&2; }
 
 # ─── Env helpers ─────────────────────────────────────────────────────
 _load_env() {
@@ -346,7 +346,7 @@ cmd_restart() {
 }
 
 cmd_enter() {
-  exec _compose exec "$SERVICE" bash
+  _compose exec "$SERVICE" bash
 }
 
 cmd_check() {
