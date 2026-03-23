@@ -42,7 +42,8 @@ ENV TZ=America/Los_Angeles \
 
 RUN echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
-COPY lib/ /usr/local/lib/python3/dist-packages/ccimage/
+COPY lib/ /opt/ccimage/ccimage/
+ENV PYTHONPATH="/opt/ccimage"
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY ccimage-check /usr/local/bin/ccimage-check
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/ccimage-check
