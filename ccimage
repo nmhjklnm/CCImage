@@ -354,7 +354,14 @@ cmd_check() {
 }
 
 cmd_verify() {
-  exec "${SCRIPT_DIR}/ccimage-verify"
+  local mode
+  mode=$(_get_mode)
+  if [[ "$mode" == "local" ]]; then
+    info "Local mode — running container-side check instead"
+    _compose exec "$SERVICE" ccimage-check
+  else
+    "${SCRIPT_DIR}/ccimage-verify"
+  fi
 }
 
 cmd_port() {
