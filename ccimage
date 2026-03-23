@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_BASE=(-f "${SCRIPT_DIR}/docker-compose.yml")
 SERVICE="ccimage"
+SHIM_IF="ccimage-shim"
+PORT_DIR="/tmp/ccimage-ports"
 
 # ─── Colors ──────────────────────────────────────────────────────────
 RED='\033[31m'  GREEN='\033[32m'  YELLOW='\033[33m'  CYAN='\033[36m'  BOLD='\033[1m'  RESET='\033[0m'
@@ -21,13 +23,11 @@ _load_env() {
 }
 
 _read_env() {
-  # Read a key from .env file (not exported env)
   local key="$1"
   [[ -f "$ENV_FILE" ]] && grep -m1 "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo ""
 }
 
 _write_env() {
-  # Set key=value in .env (update or append)
   local key="$1" value="$2"
   if [[ -f "$ENV_FILE" ]] && grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
     sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
@@ -70,15 +70,134 @@ _detect_network() {
   container_last=$(( (d + 100) % 254 + 1 ))
   container_ip="${a}.${b}.${c}.${container_last}"
 
+  # Shim IP: container IP + 1
+  shim_last=$(( container_last % 254 + 1 ))
+  shim_ip="${a}.${b}.${c}.${shim_last}"
+
   _write_env HOST_INTERFACE "$iface"
   _write_env MACVLAN_SUBNET "$subnet"
   _write_env MACVLAN_GATEWAY "$gw"
   _write_env MACVLAN_IP "$container_ip"
+  _write_env SHIM_IP "$shim_ip"
 
   printf "  Interface:  ${BOLD}%s${RESET}\n" "$iface"
   printf "  Host IP:    %s\n" "$ip"
   printf "  Gateway:    %s\n" "$gw"
   printf "  Container:  ${BOLD}%s${RESET}\n" "$container_ip"
+}
+
+# ─── Macvlan shim: lets host reach container ─────────────────────────
+_shim_up() {
+  _load_env
+  local parent="${HOST_INTERFACE:-}" cip="${MACVLAN_IP:-}" sip="${SHIM_IP:-}"
+  [[ -z "$parent" || -z "$cip" || -z "$sip" ]] && return 0
+
+  if ip link show "$SHIM_IF" &>/dev/null; then
+    return 0  # already up
+  fi
+
+  ip link add "$SHIM_IF" link "$parent" type macvlan mode bridge
+  ip addr add "${sip}/32" dev "$SHIM_IF"
+  ip link set "$SHIM_IF" up
+  ip route add "${cip}/32" dev "$SHIM_IF" 2>/dev/null || true
+}
+
+_shim_down() {
+  if ip link show "$SHIM_IF" &>/dev/null; then
+    ip link del "$SHIM_IF" 2>/dev/null || true
+  fi
+}
+
+# ─── Port forwarding ─────────────────────────────────────────────────
+_port_forward() {
+  local port="$1"
+  _load_env
+  local cip="${MACVLAN_IP:-}"
+
+  if [[ -z "$cip" ]]; then
+    err "MACVLAN_IP not set. Run ./ccimage setup first."
+    return 1
+  fi
+
+  # Ensure shim is up so host can reach container
+  _shim_up
+
+  # Check if already forwarding this port
+  mkdir -p "$PORT_DIR"
+  local pidfile="${PORT_DIR}/${port}.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    warn "Port $port already forwarded (pid $(cat "$pidfile"))"
+    return 0
+  fi
+
+  # Use socat to forward localhost:port → container:port
+  if ! command -v socat &>/dev/null; then
+    err "socat not found. Install with: apt install socat"
+    return 1
+  fi
+
+  socat TCP-LISTEN:"$port",fork,reuseaddr,bind=127.0.0.1 TCP:"${cip}":"$port" &
+  local pid=$!
+  echo "$pid" > "$pidfile"
+
+  # Verify it started
+  sleep 0.3
+  if kill -0 "$pid" 2>/dev/null; then
+    ok "localhost:${port} → ${cip}:${port} (pid $pid)"
+  else
+    err "Failed to start forwarder on port $port"
+    rm -f "$pidfile"
+    return 1
+  fi
+}
+
+_port_stop() {
+  local port="$1"
+  local pidfile="${PORT_DIR}/${port}.pid"
+  if [[ -f "$pidfile" ]]; then
+    local pid
+    pid=$(cat "$pidfile")
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+    ok "Stopped forwarding port $port"
+  else
+    warn "Port $port is not being forwarded"
+  fi
+}
+
+_port_list() {
+  mkdir -p "$PORT_DIR"
+  _load_env
+  local cip="${MACVLAN_IP:-}"
+  local found=0
+
+  for pidfile in "$PORT_DIR"/*.pid; do
+    [[ -f "$pidfile" ]] || continue
+    local port pid
+    port=$(basename "$pidfile" .pid)
+    pid=$(cat "$pidfile")
+    if kill -0 "$pid" 2>/dev/null; then
+      printf "  ${GREEN}●${RESET} localhost:%-6s → %s:%s  (pid %s)\n" "$port" "$cip" "$port" "$pid"
+      found=1
+    else
+      rm -f "$pidfile"
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    info "No ports forwarded. Use: ./ccimage port <port>"
+  fi
+}
+
+_port_stop_all() {
+  mkdir -p "$PORT_DIR"
+  for pidfile in "$PORT_DIR"/*.pid; do
+    [[ -f "$pidfile" ]] || continue
+    local pid
+    pid=$(cat "$pidfile")
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+  done
 }
 
 # ─── Commands ─────────────────────────────────────────────────────────
@@ -88,7 +207,6 @@ cmd_setup() {
   printf "${BOLD}CCImage Setup${RESET}\n"
   echo ""
 
-  # Step 1: Proxy
   local proxy
   proxy=$(_read_env PROXY_URI)
   if [[ -n "$proxy" ]]; then
@@ -104,7 +222,6 @@ cmd_setup() {
   fi
   [[ -n "$proxy" ]] && _write_env PROXY_URI "$proxy"
 
-  # Auto-detect network for macvlan
   echo ""
   info "Detecting network..."
   _detect_network
@@ -137,17 +254,19 @@ cmd_start() {
   _load_env
   info "Starting container..."
   _compose up -d
-  echo ""
 
-  # Wait briefly for container to be running
+  # Create macvlan shim so host can reach container
+  _shim_up
+
   sleep 2
 
   local state
-  state=$(docker compose "${COMPOSE_BASE[@]}" ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "unknown")
+  state=$(_compose ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "unknown")
   if [[ "$state" == "running" ]]; then
     ok "Container running"
-    info "Enter with: ${BOLD}./ccimage enter${RESET}"
-    info "Check with: ${BOLD}./ccimage check${RESET}"
+    info "Enter with:  ${BOLD}./ccimage enter${RESET}"
+    info "Check with:  ${BOLD}./ccimage check${RESET}"
+    info "Forward port: ${BOLD}./ccimage port <port>${RESET}"
   else
     err "Container state: $state"
     info "Logs: ./ccimage logs"
@@ -155,6 +274,10 @@ cmd_start() {
 }
 
 cmd_stop() {
+  info "Stopping port forwarders..."
+  _port_stop_all
+  info "Removing host shim interface..."
+  _shim_down
   info "Stopping container..."
   _compose down
   ok "Stopped"
@@ -177,6 +300,35 @@ cmd_verify() {
   exec "${SCRIPT_DIR}/ccimage-verify"
 }
 
+cmd_port() {
+  local subcmd="${1:-}"
+  local port="${2:-}"
+
+  case "$subcmd" in
+    ""|ls|list)
+      _port_list
+      ;;
+    stop)
+      if [[ -z "$port" ]]; then
+        _port_stop_all
+        ok "All port forwarders stopped"
+      else
+        _port_stop "$port"
+      fi
+      ;;
+    [0-9]*)
+      # ./ccimage port 6287
+      _port_forward "$subcmd"
+      ;;
+    *)
+      echo "Usage:"
+      echo "  ./ccimage port <port>       Forward localhost:port to container"
+      echo "  ./ccimage port list         List active forwarders"
+      echo "  ./ccimage port stop [port]  Stop forwarder(s)"
+      ;;
+  esac
+}
+
 cmd_logs() {
   _compose logs --tail=50 -f "$SERVICE"
 }
@@ -197,31 +349,39 @@ cmd_status() {
       IFS=: read -r _h _p _rest <<< "$proxy"
       display_proxy="${_h}:${_p}:***"
     fi
-    printf "  Proxy:   %s\n" "$display_proxy"
+    printf "  Proxy:      %s\n" "$display_proxy"
   else
-    printf "  Proxy:   ${YELLOW}not configured${RESET}\n"
+    printf "  Proxy:      ${YELLOW}not configured${RESET}\n"
   fi
 
-  # Container
+  local cip
+  cip=$(_read_env MACVLAN_IP)
+  [[ -n "$cip" ]] && printf "  Container:  %s\n" "$cip"
+
   local state
   state=$(_compose ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "not created")
   case "$state" in
-    running) printf "  Status:  ${GREEN}running${RESET}\n" ;;
-    *)       printf "  Status:  ${YELLOW}%s${RESET}\n" "$state" ;;
+    running) printf "  Status:     ${GREEN}running${RESET}\n" ;;
+    *)       printf "  Status:     ${YELLOW}%s${RESET}\n" "$state" ;;
   esac
 
-  # Health
   local health
   health=$(_compose ps --format '{{.Health}}' "$SERVICE" 2>/dev/null || echo "")
-  if [[ -n "$health" ]]; then
-    printf "  Health:  %s\n" "$health"
-  fi
+  [[ -n "$health" ]] && printf "  Health:     %s\n" "$health"
+
+  # Show active port forwarders
+  echo ""
+  printf "${BOLD}Ports${RESET}\n"
+  _port_list
+
   echo ""
 }
 
 cmd_destroy() {
   read -rp "Remove container and image? [y/N]: " confirm
   if [[ "$confirm" == [yY] ]]; then
+    _port_stop_all
+    _shim_down
     _compose down --rmi local --volumes 2>/dev/null || true
     ok "Removed"
   fi
@@ -231,24 +391,25 @@ cmd_help() {
   echo ""
   printf "${BOLD}Usage:${RESET} ./ccimage <command>\n"
   echo ""
-  printf "${BOLD}Commands:${RESET}\n"
-  echo "  setup     Configure proxy and network (interactive)"
-  echo "  create    Build the Docker image"
-  echo "  start     Start the container"
-  echo "  stop      Stop the container"
-  echo "  restart   Restart the container"
-  echo "  enter     Open a shell inside the container"
-  echo "  check     Run network diagnostics (inside container)"
-  echo "  verify    Verify outbound isolation (from host)"
-  echo "  status    Show current config and container state"
-  echo "  logs      Follow container logs"
-  echo "  destroy   Remove container and image"
+  printf "${BOLD}Lifecycle:${RESET}\n"
+  echo "  setup               Configure proxy (interactive)"
+  echo "  create              Build the Docker image"
+  echo "  start               Start the container"
+  echo "  stop                Stop the container"
+  echo "  restart             Restart the container"
+  echo "  destroy             Remove container and image"
   echo ""
-  printf "${BOLD}Quick start:${RESET}\n"
-  echo "  ./ccimage setup     # paste your proxy, auto-detect network"
-  echo "  ./ccimage create    # build image"
-  echo "  ./ccimage start     # start container"
-  echo "  ./ccimage enter     # use claude"
+  printf "${BOLD}Use:${RESET}\n"
+  echo "  enter               Open a shell (run claude inside)"
+  echo "  port <port>         Forward localhost:port to container"
+  echo "  port list           List active port forwarders"
+  echo "  port stop [port]    Stop port forwarder(s)"
+  echo ""
+  printf "${BOLD}Diagnostics:${RESET}\n"
+  echo "  check               Network check (inside container)"
+  echo "  verify              Verify outbound isolation (from host)"
+  echo "  status              Show config, state, and ports"
+  echo "  logs                Follow container logs"
   echo ""
 }
 
@@ -265,12 +426,12 @@ case "$cmd" in
   enter)    cmd_enter "$@" ;;
   check)    cmd_check "$@" ;;
   verify)   cmd_verify "$@" ;;
+  port)     cmd_port "$@" ;;
   status)   cmd_status "$@" ;;
   logs)     cmd_logs "$@" ;;
   destroy)  cmd_destroy "$@" ;;
   help|-h|--help) cmd_help ;;
   "")
-    # No args: if no .env, run setup; otherwise show status + help
     if [[ ! -f "$ENV_FILE" ]]; then
       cmd_setup
     else
