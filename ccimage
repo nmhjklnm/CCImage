@@ -173,6 +173,10 @@ cmd_check() {
   _compose exec "$SERVICE" ccimage-check
 }
 
+cmd_verify() {
+  exec "${SCRIPT_DIR}/ccimage-verify"
+}
+
 cmd_logs() {
   _compose logs --tail=50 -f "$SERVICE"
 }
@@ -234,7 +238,8 @@ cmd_help() {
   echo "  stop      Stop the container"
   echo "  restart   Restart the container"
   echo "  enter     Open a shell inside the container"
-  echo "  check     Run network diagnostics"
+  echo "  check     Run network diagnostics (inside container)"
+  echo "  verify    Verify outbound isolation (from host)"
   echo "  status    Show current config and container state"
   echo "  logs      Follow container logs"
   echo "  destroy   Remove container and image"
@@ -259,6 +264,7 @@ case "$cmd" in
   restart)  cmd_restart "$@" ;;
   enter)    cmd_enter "$@" ;;
   check)    cmd_check "$@" ;;
+  verify)   cmd_verify "$@" ;;
   status)   cmd_status "$@" ;;
   logs)     cmd_logs "$@" ;;
   destroy)  cmd_destroy "$@" ;;

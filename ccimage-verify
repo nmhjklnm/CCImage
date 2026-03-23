@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Verify container outbound traffic from the HOST side.
+# Proves macvlan isolation: container traffic bypasses host network stack.
+set -uo pipefail
+
+RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' CYAN='\033[36m' BOLD='\033[1m' RESET='\033[0m'
+errors=0
+
+pass() { printf "${GREEN}PASS${RESET}  %s\n" "$*"; }
+fail() { printf "${RED}FAIL${RESET}  %s\n" "$*"; errors=$((errors + 1)); }
+info() { printf "${CYAN}    ${RESET}  %s\n" "$*"; }
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+COMPOSE_FILES=(-f "${SCRIPT_DIR}/docker-compose.yml" -f "${SCRIPT_DIR}/docker-compose.macvlan.yml")
+SERVICE="ccimage"
+
+# ── Check container is running ──────────────────────────────────────
+state=$(docker compose "${COMPOSE_FILES[@]}" ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "")
+if [[ "$state" != "running" ]]; then
+  printf "${RED}Container is not running.${RESET} Start with: ./ccimage start\n"
+  exit 1
+fi
+
+echo ""
+printf "${BOLD}CCImage Outbound Verification${RESET}\n"
+echo ""
+
+# ── 1. Exit IP comparison ───────────────────────────────────────────
+# If host has VPN and container bypasses it, their exit IPs must differ.
+printf "${BOLD}[1/4] Exit IP comparison${RESET}\n"
+container_ip=$(docker compose "${COMPOSE_FILES[@]}" exec -T "$SERVICE" \
+  timeout 10 curl -sf https://ifconfig.me 2>/dev/null || echo "")
+host_ip=$(timeout 10 curl -sf https://ifconfig.me 2>/dev/null || echo "")
+
+if [[ -z "$container_ip" ]]; then
+  fail "Container cannot reach ifconfig.me"
+elif [[ -z "$host_ip" ]]; then
+  fail "Host cannot reach ifconfig.me (cannot compare)"
+elif [[ "$container_ip" == "$host_ip" ]]; then
+  printf "${YELLOW}WARN${RESET}  Exit IPs are the same: %s\n" "$container_ip"
+  info "This is expected if host has no VPN. If host has VPN, macvlan may not be working."
+else
+  pass "Exit IPs differ"
+  info "Container: $container_ip"
+  info "Host:      $host_ip"
+  info "Container is NOT going through host network stack."
+fi
+
+# ── 2. Macvlan interface check ──────────────────────────────────────
+printf "\n${BOLD}[2/4] Macvlan interface${RESET}\n"
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+  source "${SCRIPT_DIR}/.env"
+fi
+parent="${HOST_INTERFACE:-}"
+macvlan_ip="${MACVLAN_IP:-}"
+
+if [[ -z "$parent" ]]; then
+  fail "HOST_INTERFACE not set in .env"
+else
+  # Check if macvlan sub-interface exists on host
+  macvlan_if=$(ip link show 2>/dev/null | grep -oP "(?<=: )br-[a-f0-9]+|dm-[a-f0-9]+" | head -1 || echo "")
+  # More reliable: check if container IP is reachable via ARP on the parent interface
+  if [[ -n "$macvlan_ip" ]]; then
+    # Container should have its own MAC on the physical network
+    container_mac=$(docker compose "${COMPOSE_FILES[@]}" exec -T "$SERVICE" \
+      ip link show eth0 2>/dev/null | awk '/ether/{print $2}' || echo "")
+    host_mac=$(ip link show "$parent" 2>/dev/null | awk '/ether/{print $2}' || echo "")
+    if [[ -n "$container_mac" && -n "$host_mac" && "$container_mac" != "$host_mac" ]]; then
+      pass "Container has its own MAC address (macvlan active)"
+      info "Container MAC: $container_mac"
+      info "Host MAC:      $host_mac"
+    elif [[ -z "$container_mac" ]]; then
+      fail "Cannot read container MAC"
+    else
+      fail "Container shares host MAC — macvlan may not be working"
+    fi
+  fi
+fi
+
+# ── 3. Traffic path verification via traceroute ─────────────────────
+printf "\n${BOLD}[3/4] Traffic path${RESET}\n"
+# Container's first hop should be the LAN gateway, not a Docker bridge
+container_gateway=$(docker compose "${COMPOSE_FILES[@]}" exec -T "$SERVICE" \
+  ip route show default 2>/dev/null | awk '{print $3; exit}' || echo "")
+expected_gw="${MACVLAN_GATEWAY:-}"
+
+if [[ -z "$container_gateway" ]]; then
+  # With TUN active, default route goes to tun0. Check the original route.
+  container_gateway=$(docker compose "${COMPOSE_FILES[@]}" exec -T "$SERVICE" \
+    ip route show table main 2>/dev/null | grep -v tun | awk '/default/{print $3; exit}' || echo "")
+fi
+
+if [[ -n "$expected_gw" && -n "$container_gateway" ]]; then
+  if [[ "$container_gateway" == "$expected_gw" || "$container_gateway" == "172.19.0.2" ]]; then
+    pass "Container routes through physical gateway or TUN"
+    info "Gateway: $container_gateway (expected: $expected_gw or TUN)"
+  else
+    fail "Unexpected gateway: $container_gateway (expected $expected_gw)"
+  fi
+else
+  info "Skipped (cannot determine gateway)"
+fi
+
+# ── 4. Packet capture proof (quick) ────────────────────────────────
+printf "\n${BOLD}[4/4] Packet capture on ${parent:-eth0}${RESET}\n"
+if [[ -z "$parent" ]]; then
+  fail "HOST_INTERFACE not set, cannot capture"
+elif ! command -v tcpdump &>/dev/null; then
+  info "tcpdump not installed on host, skipping packet capture"
+  info "Install with: apt install tcpdump"
+else
+  # Capture packets from container IP on the physical interface
+  if [[ -n "$macvlan_ip" ]]; then
+    info "Capturing 5s of traffic from container ($macvlan_ip) on $parent..."
+    cap_file=$(mktemp /tmp/ccimage-verify-XXXXXX.pcap)
+    timeout 6 tcpdump -i "$parent" -c 20 "src $macvlan_ip" -w "$cap_file" 2>/dev/null &
+    tcpdump_pid=$!
+
+    # Trigger some traffic from container
+    docker compose "${COMPOSE_FILES[@]}" exec -T "$SERVICE" \
+      timeout 5 curl -sf https://ifconfig.me >/dev/null 2>&1 || true
+
+    wait "$tcpdump_pid" 2>/dev/null || true
+
+    pkt_count=$(tcpdump -r "$cap_file" 2>/dev/null | wc -l || echo 0)
+    rm -f "$cap_file"
+
+    if [[ "$pkt_count" -gt 0 ]]; then
+      pass "Captured $pkt_count packets from $macvlan_ip on $parent"
+      info "Container traffic goes directly through physical NIC, not host stack."
+    else
+      fail "No packets from $macvlan_ip seen on $parent"
+      info "Container traffic may be going through host network stack."
+    fi
+  fi
+fi
+
+# ── Summary ─────────────────────────────────────────────────────────
+echo ""
+if [[ "$errors" -eq 0 ]]; then
+  printf "${GREEN}${BOLD}All checks passed.${RESET} Container outbound is isolated from host.\n"
+else
+  printf "${YELLOW}${BOLD}%d issue(s) found.${RESET} Review above.\n" "$errors"
+fi
+echo ""
