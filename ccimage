@@ -354,14 +354,41 @@ cmd_check() {
 }
 
 cmd_verify() {
-  local mode
-  mode=$(_get_mode)
-  if [[ "$mode" == "local" ]]; then
-    info "Local mode — running container-side check instead"
-    _compose exec "$SERVICE" ccimage-check
+  echo ""
+  printf "${BOLD}Outbound Verification${RESET}\n"
+  echo ""
+
+  # 1. Container exit IP
+  printf "${BOLD}[1/2] Container exit IP${RESET}\n"
+  local container_ip
+  container_ip=$(_compose exec -T "$SERVICE" timeout 10 curl -sf https://ifconfig.me 2>/dev/null || echo "")
+  if [[ -n "$container_ip" ]]; then
+    ok "Container exit: ${BOLD}${container_ip}${RESET}"
   else
-    "${SCRIPT_DIR}/ccimage-verify"
+    err "Container cannot reach ifconfig.me"
   fi
+
+  # 2. Host exit IP (compare)
+  printf "\n${BOLD}[2/2] Host exit IP${RESET}\n"
+  local host_ip
+  host_ip=$(timeout 10 curl -sf https://ifconfig.me 2>/dev/null || echo "")
+  if [[ -n "$host_ip" ]]; then
+    ok "Host exit:      ${BOLD}${host_ip}${RESET}"
+  else
+    warn "Host cannot reach ifconfig.me"
+  fi
+
+  # Compare
+  echo ""
+  if [[ -n "$container_ip" && -n "$host_ip" ]]; then
+    if [[ "$container_ip" != "$host_ip" ]]; then
+      ok "Exit IPs differ — container uses a different network path than host"
+    else
+      warn "Exit IPs are the same — expected if host has no VPN"
+      info "Verify ${BOLD}${container_ip}${RESET} is your proxy's exit IP"
+    fi
+  fi
+  echo ""
 }
 
 cmd_port() {
