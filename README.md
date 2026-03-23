@@ -1,40 +1,53 @@
 # CCImage
 
-在 Docker 里提供 **Node LTS（Debian bookworm）**、**uv**、**sing-box** 与 **Claude Code CLI** 的安装与启动脚本；默认 **美国西海岸时区** 与 **en_US** 区域设置。适用于需要在 **Linux + 可访问中转 SOCKS5** 的环境下构建与运行 Claude Code 相关工具链的场景。
+Docker image with **Node LTS**, **uv**, **sing-box TUN** and **Claude Code CLI**.
 
-**非 Anthropic 官方项目**；Claude 与 Claude Code 为各自权利人的商标。
+**Not an official Anthropic project.**
 
-## 要求
-
-- **Linux**（推荐；`docker-compose` 使用 `network_mode: host` + TUN）
-- 构建与运行均需自备 **SOCKS5 代理**（`PROXY_*`），用于拉取 Debian 包、GitHub、Claude 安装脚本等
-- Docker / Docker Compose
-
-## 快速开始
+## Quick Start
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填写 PROXY_HOST、PROXY_PORT、PROXY_USER、PROXY_PASS
-
-docker compose build
-docker compose run --rm ccimage bash
-# 或长期驻留：docker compose up -d
+git clone https://github.com/nmhjklnm/CCImage.git && cd CCImage
+./ccimage setup     # paste proxy, network auto-detected
+./ccimage create    # build image
+./ccimage start     # start container
+./ccimage enter     # open shell, run claude
 ```
 
-容器内可执行 `claude`、`node`、`uv` 等（`PATH` 已包含 `~/.local/bin`）。
+## Commands
 
-## 网络说明
+```
+./ccimage setup     Configure proxy (interactive)
+./ccimage create    Build the Docker image
+./ccimage start     Start the container
+./ccimage stop      Stop the container
+./ccimage restart   Restart the container
+./ccimage enter     Open a shell inside the container
+./ccimage check     Run network diagnostics
+./ccimage status    Show config and container state
+./ccimage logs      Follow container logs
+./ccimage destroy   Remove container and image
+```
 
-- 默认 **`SINGBOX_ENABLE=1`**：启动 **sing-box TUN**，公网流量经 SOCKS 中转；会 **unset** `HTTP_PROXY`/`ALL_PROXY` 等，避免应用半直连。
-- **`SINGBOX_ENABLE=0`**：仅设置 SOCKS 环境变量，**不保证**无直连泄漏，仅供调试。
+## Proxy Formats
 
-上传仓库前请确认 **无真实代理地址、密码、主机名** 出现在提交中；`.env` 已列入 `.gitignore`。
+`./ccimage setup` accepts:
 
-## 安全提示
+| Format | Example |
+|--------|---------|
+| Share link | `ss://...`, `vmess://...`, `vless://...`, `trojan://...` |
+| Compact | `1.2.3.4:1080:user:pass` |
+| Compact (no auth) | `1.2.3.4:1080` |
 
-- `docker build` 传入的 `PROXY_PASS` 可能出现在镜像历史或构建日志中；生产环境请评估 **BuildKit secret** 或仅在可信环境构建。
-- 定期轮换代理密码；勿在 issue/截图中泄露 `.env`。
+## Networking
 
-## 许可证
+Container uses **macvlan** — gets its own IP directly on the physical network. Host VPN/TUN does not affect container traffic. Network settings are auto-detected during `./ccimage setup`.
 
-MIT，见 [LICENSE](LICENSE)。
+## Requirements
+
+- Linux + Docker / Docker Compose
+- A working proxy
+
+## License
+
+MIT — see [LICENSE](LICENSE).

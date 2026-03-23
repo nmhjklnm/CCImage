@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# CCImage network diagnostics — run inside the container to verify connectivity.
+set -uo pipefail
+
+PASS="\033[32mok\033[0m"
+FAIL="\033[31mFAIL\033[0m"
+errors=0
+
+run_check() {
+  local label="$1" hint="$2"
+  shift 2
+  local start end ms output
+  start=$(date +%s%N)
+  if output=$("$@" 2>&1); then
+    end=$(date +%s%N)
+    ms=$(( (end - start) / 1000000 ))
+    printf "[%-4s] $PASS  %s (%dms)\n" "$label" "$output" "$ms"
+  else
+    printf "[%-4s] $FAIL  %s\n" "$label" "$hint"
+    errors=$((errors + 1))
+  fi
+}
+
+check_tun() {
+  ip -o link show tun0 >/dev/null 2>&1 && echo "tun0 up"
+}
+
+check_dns() {
+  timeout 5 getent hosts google.com >/dev/null && echo "google.com resolved"
+}
+
+check_leak() {
+  local sys_ip
+  sys_ip=$(timeout 5 getent ahostsv4 myip.opendns.com 2>/dev/null | head -1 | awk '{print $1}')
+  if [ -n "$sys_ip" ]; then
+    echo "no leak detected (resolver: $sys_ip)"
+  else
+    return 1
+  fi
+}
+
+check_tcp() {
+  timeout 5 bash -c 'echo >/dev/tcp/google.com/443' 2>/dev/null && echo "google.com:443 reachable"
+}
+
+check_http() {
+  local code
+  code=$(timeout 10 curl -sf -o /dev/null -w "%{http_code}" https://claude.ai 2>/dev/null)
+  if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+    echo "https://claude.ai → $code"
+  else
+    return 1
+  fi
+}
+
+run_check "TUN"  "tun0 not found — check SINGBOX_ENABLE=1 and NET_ADMIN capability" check_tun
+run_check "DNS"  "DNS resolution failed — check DNS_SERVER" check_dns
+run_check "LEAK" "DNS leak check inconclusive — verify sing-box route rules" check_leak
+run_check "TCP"  "TCP connect failed — check proxy address and credentials" check_tcp
+run_check "HTTP" "HTTP request failed — check TLS and proxy config" check_http
+
+echo ""
+if [ "$errors" -eq 0 ]; then
+  printf "\033[32mAll checks passed.\033[0m\n"
+else
+  printf "\033[31m%d check(s) failed.\033[0m\n" "$errors"
+  exit 1
+fi

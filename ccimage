@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# CCImage — one script to configure, create, start, stop, check, and enter.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.env"
+COMPOSE_BASE=(-f "${SCRIPT_DIR}/docker-compose.yml")
+SERVICE="ccimage"
+
+# ─── Colors ──────────────────────────────────────────────────────────
+RED='\033[31m'  GREEN='\033[32m'  YELLOW='\033[33m'  CYAN='\033[36m'  BOLD='\033[1m'  RESET='\033[0m'
+
+info()  { printf "${CYAN}▸${RESET} %s\n" "$*"; }
+ok()    { printf "${GREEN}✓${RESET} %s\n" "$*"; }
+warn()  { printf "${YELLOW}!${RESET} %s\n" "$*"; }
+err()   { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
+
+# ─── Env helpers ─────────────────────────────────────────────────────
+_load_env() {
+  [[ -f "$ENV_FILE" ]] && set -a && source "$ENV_FILE" && set +a
+}
+
+_read_env() {
+  # Read a key from .env file (not exported env)
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] && grep -m1 "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo ""
+}
+
+_write_env() {
+  # Set key=value in .env (update or append)
+  local key="$1" value="$2"
+  if [[ -f "$ENV_FILE" ]] && grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+  fi
+}
+
+_compose_files() {
+  echo "${COMPOSE_BASE[@]}" -f "${SCRIPT_DIR}/docker-compose.macvlan.yml"
+}
+
+_compose() {
+  local files
+  files=($(_compose_files))
+  docker compose "${files[@]}" "$@"
+}
+
+# ─── Network auto-detect ─────────────────────────────────────────────
+_detect_network() {
+  local iface gw addr ip prefix a b c d bits net_addr subnet container_last container_ip
+
+  iface=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+  gw=$(ip route show default 2>/dev/null | awk '/default/{print $3; exit}')
+
+  if [[ -z "$iface" || -z "$gw" ]]; then
+    err "Cannot detect default network interface"
+    return 1
+  fi
+
+  addr=$(ip -4 addr show "$iface" | awk '/inet /{print $2; exit}')
+  ip="${addr%/*}"
+  prefix="${addr#*/}"
+
+  IFS=. read -r a b c d <<< "$ip"
+  bits=$((0xFFFFFFFF << (32 - prefix) & 0xFFFFFFFF))
+  net_addr="$(( a & (bits >> 24 & 0xFF) )).$(( b & (bits >> 16 & 0xFF) )).$(( c & (bits >> 8 & 0xFF) )).$(( d & (bits & 0xFF) ))"
+  subnet="${net_addr}/${prefix}"
+
+  container_last=$(( (d + 100) % 254 + 1 ))
+  container_ip="${a}.${b}.${c}.${container_last}"
+
+  _write_env HOST_INTERFACE "$iface"
+  _write_env MACVLAN_SUBNET "$subnet"
+  _write_env MACVLAN_GATEWAY "$gw"
+  _write_env MACVLAN_IP "$container_ip"
+
+  printf "  Interface:  ${BOLD}%s${RESET}\n" "$iface"
+  printf "  Host IP:    %s\n" "$ip"
+  printf "  Gateway:    %s\n" "$gw"
+  printf "  Container:  ${BOLD}%s${RESET}\n" "$container_ip"
+}
+
+# ─── Commands ─────────────────────────────────────────────────────────
+
+cmd_setup() {
+  echo ""
+  printf "${BOLD}CCImage Setup${RESET}\n"
+  echo ""
+
+  # Step 1: Proxy
+  local proxy
+  proxy=$(_read_env PROXY_URI)
+  if [[ -n "$proxy" ]]; then
+    info "Current proxy: ${BOLD}${proxy}${RESET}"
+    read -rp "  New proxy URI (Enter to keep): " input
+    [[ -n "$input" ]] && proxy="$input"
+  else
+    read -rp "  Proxy URI (e.g. ss://..., ip:port:user:pass): " proxy
+  fi
+  if [[ -z "$proxy" && -z "$(_read_env PROXY_HOST)" ]]; then
+    err "Proxy is required"
+    return 1
+  fi
+  [[ -n "$proxy" ]] && _write_env PROXY_URI "$proxy"
+
+  # Auto-detect network for macvlan
+  echo ""
+  info "Detecting network..."
+  _detect_network
+
+  echo ""
+  ok "Config saved to .env"
+  echo ""
+  info "Next: ${BOLD}./ccimage create${RESET}"
+}
+
+cmd_create() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    warn "No .env found, running setup first..."
+    cmd_setup
+  fi
+  _load_env
+  echo ""
+  info "Building image..."
+  _compose build
+  echo ""
+  ok "Image built"
+  info "Start with: ${BOLD}./ccimage start${RESET}"
+}
+
+cmd_start() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    warn "No .env found, running setup first..."
+    cmd_setup
+  fi
+  _load_env
+  info "Starting container..."
+  _compose up -d
+  echo ""
+
+  # Wait briefly for container to be running
+  sleep 2
+
+  local state
+  state=$(docker compose "${COMPOSE_BASE[@]}" ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "unknown")
+  if [[ "$state" == "running" ]]; then
+    ok "Container running"
+    info "Enter with: ${BOLD}./ccimage enter${RESET}"
+    info "Check with: ${BOLD}./ccimage check${RESET}"
+  else
+    err "Container state: $state"
+    info "Logs: ./ccimage logs"
+  fi
+}
+
+cmd_stop() {
+  info "Stopping container..."
+  _compose down
+  ok "Stopped"
+}
+
+cmd_restart() {
+  cmd_stop
+  cmd_start
+}
+
+cmd_enter() {
+  exec _compose exec "$SERVICE" bash
+}
+
+cmd_check() {
+  _compose exec "$SERVICE" ccimage-check
+}
+
+cmd_logs() {
+  _compose logs --tail=50 -f "$SERVICE"
+}
+
+cmd_status() {
+  _load_env
+  echo ""
+  printf "${BOLD}CCImage Status${RESET}\n"
+  echo ""
+
+  local proxy
+  proxy=$(_read_env PROXY_URI)
+  if [[ -n "$proxy" ]]; then
+    local display_proxy
+    if [[ "$proxy" == *"://"* ]]; then
+      display_proxy="${proxy%%://*}://***"
+    else
+      IFS=: read -r _h _p _rest <<< "$proxy"
+      display_proxy="${_h}:${_p}:***"
+    fi
+    printf "  Proxy:   %s\n" "$display_proxy"
+  else
+    printf "  Proxy:   ${YELLOW}not configured${RESET}\n"
+  fi
+
+  # Container
+  local state
+  state=$(_compose ps --format '{{.State}}' "$SERVICE" 2>/dev/null || echo "not created")
+  case "$state" in
+    running) printf "  Status:  ${GREEN}running${RESET}\n" ;;
+    *)       printf "  Status:  ${YELLOW}%s${RESET}\n" "$state" ;;
+  esac
+
+  # Health
+  local health
+  health=$(_compose ps --format '{{.Health}}' "$SERVICE" 2>/dev/null || echo "")
+  if [[ -n "$health" ]]; then
+    printf "  Health:  %s\n" "$health"
+  fi
+  echo ""
+}
+
+cmd_destroy() {
+  read -rp "Remove container and image? [y/N]: " confirm
+  if [[ "$confirm" == [yY] ]]; then
+    _compose down --rmi local --volumes 2>/dev/null || true
+    ok "Removed"
+  fi
+}
+
+cmd_help() {
+  echo ""
+  printf "${BOLD}Usage:${RESET} ./ccimage <command>\n"
+  echo ""
+  printf "${BOLD}Commands:${RESET}\n"
+  echo "  setup     Configure proxy and network (interactive)"
+  echo "  create    Build the Docker image"
+  echo "  start     Start the container"
+  echo "  stop      Stop the container"
+  echo "  restart   Restart the container"
+  echo "  enter     Open a shell inside the container"
+  echo "  check     Run network diagnostics"
+  echo "  status    Show current config and container state"
+  echo "  logs      Follow container logs"
+  echo "  destroy   Remove container and image"
+  echo ""
+  printf "${BOLD}Quick start:${RESET}\n"
+  echo "  ./ccimage setup     # paste your proxy, auto-detect network"
+  echo "  ./ccimage create    # build image"
+  echo "  ./ccimage start     # start container"
+  echo "  ./ccimage enter     # use claude"
+  echo ""
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────
+cmd="${1:-}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  setup)    cmd_setup "$@" ;;
+  create)   cmd_create "$@" ;;
+  start)    cmd_start "$@" ;;
+  stop)     cmd_stop "$@" ;;
+  restart)  cmd_restart "$@" ;;
+  enter)    cmd_enter "$@" ;;
+  check)    cmd_check "$@" ;;
+  status)   cmd_status "$@" ;;
+  logs)     cmd_logs "$@" ;;
+  destroy)  cmd_destroy "$@" ;;
+  help|-h|--help) cmd_help ;;
+  "")
+    # No args: if no .env, run setup; otherwise show status + help
+    if [[ ! -f "$ENV_FILE" ]]; then
+      cmd_setup
+    else
+      cmd_status
+      cmd_help
+    fi
+    ;;
+  *)
+    err "Unknown command: $cmd"
+    cmd_help
+    exit 1
+    ;;
+esac

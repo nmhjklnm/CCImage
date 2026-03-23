@@ -1,42 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PROXY_HOST:?Set PROXY_HOST (SOCKS5 transit)}"
-: "${PROXY_PORT:?Set PROXY_PORT}"
-: "${PROXY_USER:?Set PROXY_USER}"
-: "${PROXY_PASS:?Set PROXY_PASS}"
-
 SINGBOX_ENABLE="${SINGBOX_ENABLE:-1}"
+DISABLE_IPV6="${DISABLE_IPV6:-1}"
+HEALTHCHECK="${HEALTHCHECK:-1}"
 
-unset ALL_PROXY HTTP_PROXY HTTPS_PROXY all_proxy http_proxy https_proxy || true
-unset NO_PROXY no_proxy || true
+# Clear proxy env — sing-box TUN handles routing
+unset ALL_PROXY HTTP_PROXY HTTPS_PROXY all_proxy http_proxy https_proxy \
+      NO_PROXY no_proxy 2>/dev/null || true
 
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null || true
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true
+# Optional IPv6 disable
+if [[ "$DISABLE_IPV6" == "1" ]]; then
+  sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null || true
+  sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true
+fi
 
 _SINGBOX_PID=""
 
-if [[ "${SINGBOX_ENABLE}" == "1" ]]; then
+if [[ "$SINGBOX_ENABLE" == "1" ]]; then
+  # Generate config via Python engine
   mkdir -p /etc/sing-box
-  python3 /usr/local/lib/render-singbox-config.py >/etc/sing-box/config.json
+  python3 -m ccimage > /etc/sing-box/config.json \
+    || { echo "Failed to generate sing-box config" >&2; exit 1; }
+
   sing-box run -c /etc/sing-box/config.json &
   _SINGBOX_PID=$!
+
+  # Wait for TUN interface
   for _ in $(seq 1 150); do
-    if ip -o link show 2>/dev/null | grep -qw tun; then
-      break
-    fi
-    if ! kill -0 "${_SINGBOX_PID}" 2>/dev/null; then
-      echo "sing-box exited before TUN came up" >&2
-      exit 1
-    fi
+    ip -o link show tun0 2>/dev/null && break
+    kill -0 "$_SINGBOX_PID" 2>/dev/null || { echo "sing-box exited before TUN came up" >&2; exit 1; }
     sleep 0.05
   done
-  printf 'nameserver 172.19.0.2\noptions ndots:0\n' >/etc/resolv.conf
-elif [[ "${SINGBOX_ENABLE}" == "0" ]]; then
-  PROXY_URL="socks5h://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}"
-  export ALL_PROXY="${PROXY_URL}" HTTP_PROXY="${PROXY_URL}" HTTPS_PROXY="${PROXY_URL}"
-  export all_proxy="${PROXY_URL}" http_proxy="${PROXY_URL}" https_proxy="${PROXY_URL}"
-  export no_proxy="${NO_PROXY:-localhost,127.0.0.1,::1}" NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,::1}"
+
+  _net="${TUN_ADDRESS:-172.19.0.1/30}"
+  _base="${_net%/*}"
+  _prefix="${_base%.*}"
+  _last="${_base##*.}"
+  TUN_DNS="${_prefix}.$(( _last + 1 ))"
+  printf 'nameserver %s\noptions ndots:0\n' "$TUN_DNS" > /etc/resolv.conf
+
+  # Startup health check
+  if [[ "$HEALTHCHECK" == "1" ]]; then
+    echo "Running startup health check..."
+    ccimage-check || echo "Warning: some checks failed (container will start anyway)" >&2
+  fi
+
+elif [[ "$SINGBOX_ENABLE" == "0" ]]; then
+  # Fallback: env-based SOCKS proxy (not leak-safe)
+  # Build SOCKS URL from PROXY_URI or legacy vars
+  if [[ -n "${PROXY_URI:-}" ]] && [[ "$PROXY_URI" != *"://"* ]]; then
+    IFS=: read -r h p u pw <<< "$PROXY_URI"
+    PROXY_URL="socks5h://${u:+$u:$pw@}$h:$p"
+  elif [[ -n "${PROXY_HOST:-}" ]]; then
+    PROXY_URL="socks5h://${PROXY_USER:+$PROXY_USER:$PROXY_PASS@}${PROXY_HOST}:${PROXY_PORT:-1080}"
+  else
+    echo "SINGBOX_ENABLE=0 but no SOCKS proxy configured" >&2
+    exit 1
+  fi
+  export ALL_PROXY="$PROXY_URL" HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL"
+  export all_proxy="$PROXY_URL" http_proxy="$PROXY_URL" https_proxy="$PROXY_URL"
+  export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
   echo "SINGBOX_ENABLE=0: using env SOCKS only (not leak-safe)." >&2
 else
   echo "SINGBOX_ENABLE must be 0 or 1" >&2
@@ -44,10 +68,7 @@ else
 fi
 
 _cleanup() {
-  if [[ -n "${_SINGBOX_PID}" ]]; then
-    kill -TERM "${_SINGBOX_PID}" 2>/dev/null || true
-    wait "${_SINGBOX_PID}" 2>/dev/null || true
-  fi
+  [[ -n "$_SINGBOX_PID" ]] && kill -TERM "$_SINGBOX_PID" 2>/dev/null && wait "$_SINGBOX_PID" 2>/dev/null || true
 }
 trap _cleanup EXIT INT TERM
 

@@ -1,0 +1,28 @@
+# Macvlan mode: container gets its own IP directly on the physical network.
+# Outbound bypasses host network stack entirely — immune to host TUN/VPN.
+#
+# Required: set these in .env:
+#   HOST_INTERFACE=eth0          # your physical NIC (ip route | grep default)
+#   MACVLAN_SUBNET=192.168.1.0/24
+#   MACVLAN_GATEWAY=192.168.1.1
+#   MACVLAN_IP=192.168.1.200     # static IP for the container
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.macvlan.yml up -d
+#
+# Note: host cannot directly reach the container (macvlan limitation).
+#       Use `docker exec` to access the container.
+services:
+  ccimage:
+    networks:
+      isolated:
+        ipv4_address: ${MACVLAN_IP:?Set MACVLAN_IP in .env}
+
+networks:
+  isolated:
+    driver: macvlan
+    driver_opts:
+      parent: ${HOST_INTERFACE:?Set HOST_INTERFACE in .env (e.g. eth0)}
+    ipam:
+      config:
+        - subnet: ${MACVLAN_SUBNET:?Set MACVLAN_SUBNET in .env}
+          gateway: ${MACVLAN_GATEWAY:?Set MACVLAN_GATEWAY in .env}
